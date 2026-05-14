@@ -120,12 +120,29 @@ class Analysis:
     
     def get_vega(self , option : Option , market : Market   , model :Pricing , t:float) -> float:
         # del price / del vol 
-        pass 
+        tau = option.T -t 
+        d1 , _ = model._get_d1_d2(option , market , t)
+        n1_prime = norm.pdf(d1)
+        S = market.S 
+        return S * np.sqrt(tau) * n1_prime
 
     def get_theta(self, option : Option , market :Market ,model:Pricing, t: float)-> float:
         # - del price / del tau 
-        pass 
+        S = market.S 
+        sigma = market.sigma 
+        tau = option.T - t 
+        r = market.r 
+        _ , d2 = model._get_d1_d2(option , market , t)
+        K = option.K 
 
+        n2 =  norm.cdf(d2)
+        n2_prime = norm.pdf(d2)
+
+        fact_1 = S*sigma/(2*np.sqrt(tau)) 
+        fact_2 = r 
+
+        return -K*np.exp(-r*tau)*(fact_1 * n2_prime + fact_2 * n2)
+    
     def get_rho(self, option :Option , market :Market , model : Pricing , t:float) -> float:
         # del price / del interest 
         pass 
