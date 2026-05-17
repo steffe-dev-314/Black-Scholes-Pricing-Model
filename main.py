@@ -1,20 +1,55 @@
 
 import numpy as np 
 from scipy.stats import norm 
-from scipy.optimize import minimize_scalar
+from scipy.optimize import newton , bisect 
 from dataclasses import dataclass
+from typing import Callable
 
 # ------ Helpers ------ 
 
 def _calc_PV(r : float ,x : float,tau : float)->float:
     return x*np.exp(-r*tau)
 
+# no input validation since only used in classes where inputs already valid 
+def _get_d1_d2(K :float , T : float , sigma :float , r : float, S : float , t:float)->tuple[float,float]:
+    
+    tau = T - t 
+
+    tau_sigma = np.sqrt(tau)*sigma
+    d1_fact_1 = tau_sigma**(-1) # tau = 0 --> div by 0 
+    d1_fact_2 = np.log(S/K) + tau*(r + sigma**2/2) # S = 0 --> -inf 
+
+    d1 = d1_fact_1 * d1_fact_2
+    d2 = d1 - tau_sigma
+
+    return d1 , d2   
+
+def _get_d1_d2_prime(K :float , T : float , sigma :float , r : float, S : float , t:float)->tuple[float,float]:
+    #d_1,2' = -log(S/K)*(1/sigma^2 sqrt(tau)) - r sqrt(tau)/sigma +- 1/2 sqrt(tau)
+    tau = T - t
+    s1 = -1*np.log(S/K)*(np.sqrt(tau)*sigma**2)**(-1) 
+    s2 = -r * np.sqrt(tau)/sigma**2
+    s3 = 1/2 * np.sqrt(tau)
+    return s1 + s2 + s3 , s1 + s2 - s3 
+
+# remove this ? 
 def _get_normal_const(d1 : float,d2 : float) -> tuple[float,float]:
     d1 = float(d1)
     d2 = float(d2)
     n1 = float(norm.cdf(d1))
     n2 = float(norm.cdf(d2))
     return n1 , n2 
+
+def do_newton(x0:float , f:Callable , fprime:Callable , maxiter:int , tol:float , extra : tuple):
+    ## own newton for debugging 
+    run_num =0 
+    while np.abs(f(x0,*extra)) > tol:
+        x0 = x0 - f(x0,*extra)/fprime(x0,*extra)
+        run_num += 1 
+        if run_num == maxiter:
+            print('reached maxiter')
+            break
+    return x0 
 
 # ------ OptionData ------ 
 @dataclass
@@ -53,24 +88,7 @@ class Market:
 
 class Pricing:
 
-    # ------ Helper Functions for const ------
-
-    def _get_d1_d2(self,option :Option, market:Market , t:float)->tuple[float,float]:
-        
-        tau = option.T - t # tau here implicit from option.T and t 
-        sigma = market.sigma
-        S = market.S
-        r = market.r
-        K =option.K
-
-        tau_sigma = np.sqrt(tau)*sigma
-        d1_fact_1 = tau_sigma**(-1) # tau = 0 --> div by 0 
-        d1_fact_2 = np.log(S/K) + tau*(r + sigma**2/2) # S = 0 --> -inf 
-
-        d1 = d1_fact_1 * d1_fact_2
-        d2 = d1 - tau_sigma
-
-        return d1 , d2        
+    # ------ Helper Functions for const ------     
     
     def _get_intrinsic_value(self,option:Option,market:Market):
         return max(0, market.S - option.K)
@@ -109,7 +127,7 @@ class Pricing:
         if current_case == 'DETERMINISTIC':
             return max(0,market.S - np.exp(-market.r*tau)*option.K)
 
-        d1 , d2 = self._get_d1_d2(option , market , t)
+        d1 , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         n1 , n2 = _get_normal_const(d1 = d1,d2 = d2)
         PV_K = _calc_PV(r = market.r, x = option.K,tau = tau)
 
@@ -125,14 +143,14 @@ class Analysis:
     # ----- 1. order greeks ----- 
     def get_delta(self, option:Option , market:Market , model:Pricing ,t:float)->float:
         # del price / del underlying 
-        d1 , d2 = model._get_d1_d2(option , market , t)
+        d1 , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         n1 , _ = _get_normal_const(d1 = d1,d2 = d2)  
         return n1 
     
     def get_vega(self , option : Option , market : Market   , model :Pricing , t:float) -> float:
         # del price / del vol 
         tau = option.T -t 
-        d1 , _ = model._get_d1_d2(option , market , t)
+        d1 , _ = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         n1_prime = norm.pdf(d1)
         S = market.S 
         return S * np.sqrt(tau) * n1_prime
@@ -143,7 +161,7 @@ class Analysis:
         sigma = market.sigma 
         tau = option.T - t 
         r = market.r 
-        _ , d2 = model._get_d1_d2(option , market , t)
+        _ , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         K = option.K 
 
         n2 =  norm.cdf(d2)
@@ -155,8 +173,12 @@ class Analysis:
         return -K*np.exp(-r*tau)*(fact_1 * n2_prime + fact_2 * n2)
     
     def get_rho(self, option :Option , market :Market , model : Pricing , t:float) -> float:
-        # del price / del interest 
-        return 0
+        tau = option.T - t 
+        K = option.K 
+        r = market.r 
+        d1 , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
+        _ , n2 = _get_normal_const(d1 = d1,d2 = d2)     
+        return tau*K*np.exp(-r*tau)*n2 
 
     def get_lambda(self, option : Option , market : Market , model : Pricing , t : float)-> float:
         # underlying/price * Delta 
@@ -167,10 +189,66 @@ class Analysis:
 
 
 
-    # ------ IV Solver ------ 
+# ------ IV Solver ------ 
+
+# this should later accept Pricing so we have access to its pricing function directly
+class IVSolver:
+    def __init__(self, option : Option , market:Market):
+        self.r = market.r
+        self.S = market.S 
+        self.K = option.K 
+        self.T = option.T
+
+    # temporary : re-implement BS formula here again (redudant, maybe rework)
+    def get_f(self,sigma , t , P_market): 
+        K = self.K 
+        T = self.T 
+        tau = T - t 
+        r = self. r 
+        S= self.S 
+
+        d1 , d2 = _get_d1_d2(sigma = sigma ,K = K , T  = T ,r = r , S = S , t = t)
+        n1 , n2 = norm.cdf(float(d1)) , norm.cdf(float(d2))
+
+        BS_price = S*n1 - K*np.exp(-r*tau)*n2 
+        return BS_price - P_market
+
+    def get_f_prime(self,sigma , t ,P_market): 
+        K = self.K 
+        T = self.T 
+        tau = T - t 
+        r = self. r 
+        S= self.S 
+
+        d1 , d2 = _get_d1_d2(sigma = sigma ,K = K , T  = T ,r = r , S = S , t = t)
+        d1_prime , d2_prime = _get_d1_d2_prime(sigma = sigma ,K = K , T  = T ,r = r , S = S , t = t)
+        n1 , n2 = norm.cdf(float(d1)) , norm.cdf(float(d2))
+        n1_prime , n2_prime = norm.pdf(float(d1)) , norm.pdf(float(d2))
+
+        BS_price_prime = S*n1_prime*d1_prime - K*np.exp(-r*tau)*n2_prime*d2_prime
+        
+        return BS_price_prime
+
+    def get_IV(self,t ,method , P_market ,x0 = None):
+        if x0 is None:
+            x0 = 0.1
+        if x0 == 0:
+            raise ValueError(f'Got zero volatility which is not permitted!')
+
+        if method == 'scipy_newton': 
+            x_root = newton(func = self.get_f, fprime = self.get_f_prime , x0 = x0, args = (t,P_market) , maxiter = 100 ,tol = 1e-6)
+        elif method == 'own_newton':
+            x_root = do_newton(x0 = x0 , f = self.get_f , fprime = self.get_f_prime , maxiter = 100 , tol = 1e-6 , extra = (t,P_market))
+
+        return x_root 
+        
+
 
 
 if __name__ == '__main__':
+    import time 
+
+    start_scipy = time.perf_counter()
     # standard setting : S = K = 100 , T = 1 , r = 0.02 , sigma = 0.2 , t = 0, should give P = 8.9 
     market = Market(S= 100, sigma = 0.2, r = 0.02)
     #option = Option(K = 100 , T = 1 , option_type='call' , european=True)
@@ -178,8 +256,22 @@ if __name__ == '__main__':
 
     model = Pricing()
     analysis = Analysis()
+    solver = IVSolver(option=option, market = market)
 
 
-    print(model.get_option_price(option=option , market=market , t= 0))
-    print(analysis.get_delta(option , market , model , 0))
+    #print(model.get_option_price(option=option , market=market , t= 0))
+    #print(analysis.get_delta(option , market , model , 0))
+    iv_scipy = solver.get_IV(t = 0, method = 'scipy_newton' , P_market = 8.9, x0= 1)
+    end_scipy = time.perf_counter()
+    print(f'iv_scipy : {iv_scipy}')
+    print(f'time :  {(end_scipy - start_scipy)*1e6:.2f} ms')
+    #print(solver.get_f(sigma = 0.2, t = 0 , P_market= 8.9))
+    #print(solver.get_f_prime(sigma = 0.2, t = 0 , P_market= 8.9))
+    
 
+    start_own = time.perf_counter()
+    iv_own = solver.get_IV(t = 0 , method = 'own_newton' , P_market = 8.9 , x0 = 1)
+    end_own = time.perf_counter()
+    print(f'iv_own = {iv_own}')
+    print(f'time :  {(end_own - start_own)*1e6:.2f} ms')
+    
