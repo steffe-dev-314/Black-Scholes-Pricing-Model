@@ -4,11 +4,14 @@ from scipy.stats import norm
 from scipy.optimize import newton , bisect 
 from dataclasses import dataclass
 from typing import Callable
-
+from root_solver import find_sign_change , do_bisection
 # ------ Helpers ------ 
 
 def _calc_PV(r : float ,x : float,tau : float)->float:
     return x*np.exp(-r*tau)
+
+def _calc_intrinsic_value(S : float,K : float)->float:
+    return max(0, S - K)
 
 # no input validation since only used in classes where inputs already valid 
 def _get_d1_d2(K :float , T : float , sigma :float , r : float, S : float , t:float)->tuple[float,float]:
@@ -87,12 +90,7 @@ class Market:
 # ----- Pricing Engine ------        
 
 class Pricing:
-
-    # ------ Helper Functions for const ------     
-    
-    def _get_intrinsic_value(self,option:Option,market:Market):
-        return max(0, market.S - option.K)
-
+            
     # ------ Pricing ------
 
     def _check_edge_cases(self,option: Option, market:Market , t :float)->str:
@@ -119,7 +117,7 @@ class Pricing:
         current_case = self._check_edge_cases(option,market,t)
 
         if current_case == 'AT_MATURITY':
-            return self._get_intrinsic_value(option=option,market=market)
+            return _calc_intrinsic_value(K=option.K,S=market.S)
         if current_case == 'ZERO_STRIKE':
             return market.S 
         if current_case == 'ZERO_UNDERLYING':
@@ -274,4 +272,8 @@ if __name__ == '__main__':
     end_own = time.perf_counter()
     print(f'iv_own = {iv_own}')
     print(f'time :  {(end_own - start_own)*1e6:.2f} ms')
-    
+
+    a,b = find_sign_change(f = solver.get_f , args = (0,8.9) , a0 = 0.01 , maxiter = 200 , stepsize= 0.1) 
+    #print(np.round(a,2),np.round(b,2))
+    #print(solver.get_f(a,t=0 , P_market = 8.9) , solver.get_f(b,t=0 , P_market = 8.9))
+    print(do_bisection(f = solver.get_f , args = (0,8.9) ,a0 = 0.01, maxiter = 300 ,root_tol = 1e-6 , stepsize = 0.001))
