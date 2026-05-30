@@ -1,10 +1,10 @@
 
 import numpy as np 
 from scipy.stats import norm 
-from scipy.optimize import newton , bisect 
+from scipy.optimize import newton , bisect
 from dataclasses import dataclass
 from typing import Callable
-from root_solver import find_sign_change , do_bisection
+from root_solver import find_sign_change , do_bisection ,do_newton
 # ------ Helpers ------ 
 
 def _calc_PV(r : float ,x : float,tau : float)->float:
@@ -43,22 +43,13 @@ def _get_normal_const(d1 : float,d2 : float) -> tuple[float,float]:
     n2 = float(norm.cdf(d2))
     return n1 , n2 
 
-def do_newton(x0:float , f:Callable , fprime:Callable , maxiter:int , tol:float , extra : tuple):
-    ## own newton for debugging 
-    run_num =0 
-    while np.abs(f(x0,*extra)) > tol:
-        x0 = x0 - f(x0,*extra)/fprime(x0,*extra)
-        run_num += 1 
-        if run_num == maxiter:
-            print('reached maxiter')
-            break
-    return x0 
 
 # ------ OptionData ------ 
 @dataclass
 class Option:
     K : float 
     T : float 
+    is_call : bool 
     def __post_init__(self):
         self.K = float(self.K)
         self.T = float(self.T)
@@ -131,9 +122,11 @@ class Pricing:
 
         sum1 = n1*market.S
         sum2 = n2*PV_K
-
-        return sum1 - sum2
-
+        price_call = sum1 - sum2
+        if option.is_call: 
+            return price_call 
+        else: 
+            return price_call - market.S + option.K * np.exp(-market.r * tau) # put price from put call partiry
 # ----- analysis class ----- 
 
 class Analysis:
@@ -143,7 +136,11 @@ class Analysis:
         # del price / del underlying 
         d1 , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         n1 , _ = _get_normal_const(d1 = d1,d2 = d2)  
-        return n1 
+        if option.is_call:
+            return n1 
+        else:
+            return n1 - 1
+
     
     def get_vega(self , option : Option , market : Market   , model :Pricing , t:float) -> float:
         # del price / del vol 
@@ -151,7 +148,7 @@ class Analysis:
         d1 , _ = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         n1_prime = norm.pdf(d1)
         S = market.S 
-        return S * np.sqrt(tau) * n1_prime
+        return S * np.sqrt(tau) * n1_prime # no difference put or call 
 
     def get_theta(self, option : Option , market :Market ,model:Pricing, t: float)-> float:
         # - del price / del tau 
@@ -167,16 +164,24 @@ class Analysis:
 
         fact_1 = S*sigma/(2*np.sqrt(tau)) 
         fact_2 = r 
-
-        return -K*np.exp(-r*tau)*(fact_1 * n2_prime + fact_2 * n2)
+        theta_call = -K*np.exp(-r*tau)*(fact_1 * n2_prime + fact_2 * n2)
+        if option.is_call:
+            return theta_call 
+        else: 
+            return theta_call + r*K*np.exp(-r*tau)
     
     def get_rho(self, option :Option , market :Market , model : Pricing , t:float) -> float:
+        # del price / del r 
         tau = option.T - t 
         K = option.K 
         r = market.r 
         d1 , d2 = _get_d1_d2(K = option.K , T = option.T , sigma = market.sigma , S= market.S  ,r = market.r, t = t)
         _ , n2 = _get_normal_const(d1 = d1,d2 = d2)     
-        return tau*K*np.exp(-r*tau)*n2 
+        rho_call = tau*K*np.exp(-r*tau)*n2 
+        if option.is_call: 
+            return rho_call 
+        else: 
+            return rho_call - tau*np.exp(-r*tau) 
 
     def get_lambda(self, option : Option , market : Market , model : Pricing , t : float)-> float:
         # underlying/price * Delta 
@@ -236,7 +241,7 @@ class IVSolver:
         if method == 'scipy_newton': 
             x_root = newton(func = self.get_f, fprime = self.get_f_prime , x0 = x0, args = (t,P_market) , maxiter = 100 ,tol = 1e-6)
         elif method == 'own_newton':
-            x_root = do_newton(x0 = x0 , f = self.get_f , fprime = self.get_f_prime , maxiter = 100 , tol = 1e-6 , extra = (t,P_market))
+            x_root = do_newton(x0 = x0 , f = self.get_f , fprime = self.get_f_prime , maxiter = 100 , tol = 1e-6 , args = (t,P_market))
 
         return x_root 
         
@@ -250,12 +255,11 @@ if __name__ == '__main__':
     # standard setting : S = K = 100 , T = 1 , r = 0.02 , sigma = 0.2 , t = 0, should give P = 8.9 
     market = Market(S= 100, sigma = 0.2, r = 0.02)
     #option = Option(K = 100 , T = 1 , option_type='call' , european=True)
-    option = Option(K = 100 , T = 1)
+    option = Option(K = 100 , T = 1 , is_call = True)
 
     model = Pricing()
     analysis = Analysis()
     solver = IVSolver(option=option, market = market)
-
 
     #print(model.get_option_price(option=option , market=market , t= 0))
     #print(analysis.get_delta(option , market , model , 0))
@@ -273,7 +277,11 @@ if __name__ == '__main__':
     print(f'iv_own = {iv_own}')
     print(f'time :  {(end_own - start_own)*1e6:.2f} ms')
 
-    a,b = find_sign_change(f = solver.get_f , args = (0,8.9) , a0 = 0.01 , maxiter = 200 , stepsize= 0.1) 
+    a0 = 0.1
+    maxiter = 1000
+    s = 10/maxiter*max(a0,1) # a0 should somehow be bounded judging from a bit of testing 
+
+    a,b = find_sign_change(f = solver.get_f , args = (0,8.9) , a0 = a0, maxiter = maxiter , stepsize= s) 
     #print(np.round(a,2),np.round(b,2))
     #print(solver.get_f(a,t=0 , P_market = 8.9) , solver.get_f(b,t=0 , P_market = 8.9))
-    print(do_bisection(f = solver.get_f , args = (0,8.9) ,a0 = 0.01, maxiter = 300 ,root_tol = 1e-6 , stepsize = 0.001))
+    print(do_bisection(f = solver.get_f , args = (0,8.9) ,a0 = a0, maxiter = maxiter ,root_tol = 1e-6 , stepsize = s))
