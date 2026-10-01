@@ -9,39 +9,68 @@ def do_newton(f, fprime , x0 , args , maxiter , tol):
         run_num += 1 
         if run_num == maxiter:
             break
+    return x0 
 
 def find_sign_change(f : Callable,args : tuple,a0:float , maxiter:int = 100, stepsize:float = 1):
     run_num = 0
     b0 = a0 + stepsize 
-    # more stable and <= indicates sign chagne and near 0 too 
-    while f(a0,*args)*f(b0,*args)>0:
-        a0 = b0 
-        b0 = b0 + stepsize
-        run_num += 1 
-        if run_num == maxiter:
-            print('maxiter reached')
-            break 
+    # more stable and <= indicates sign chagne and near 0 too
+
+    try:
+        f(a0,*args)*f(b0,*args)
+    except ZeroDivisionError as e:
+        raise ZeroDivisionError('Math domain error, zero-division at initialization')
+
+
+    if np.isnan(f(a0,*args)*f(b0,*args)):
+        raise ValueError('Math domain error at initialization, check a0 and stepsize!')
+    
+    else:
+        while f(a0,*args)*f(b0,*args)>0:
+            a0 = b0 
+            b0 = b0 + stepsize
+            run_num += 1 
+            if np.isnan(f(a0,*args)*f(b0,*args)):
+                raise ValueError(f'Reached invalid domain after {run_num} iterarions, check a0 and stepsize!')
+            if run_num == maxiter:
+                raise RuntimeError(f'No sign change found after {maxiter} iterations')
+
     return a0 , b0 
 
 #stepsize as % of a0? 
 def do_bisection(f:Callable , args : tuple , a0:float, maxiter:int = 100 , stepsize:float = 1 ,root_tol :float = 1e-6):
     a, b = find_sign_change(f,args,a0,maxiter,stepsize)
-    print(f'initial a,b : ({min(a,b):.4f},{max(a,b):.4f})')
+    #print(f'initial a,b : ({min(a,b):.4f},{max(a,b):.4f})')
     c = (a+b)/2
     runnum = 0 
-    while np.abs(f(c,*args)) >= root_tol:
+    try:
+        f(c,*args) 
+    except ZeroDivisionError as e:
+        raise ZeroDivisionError('Math domain error, zero-division at initialization')
+    if np.isnan(np.abs(f(c,*args))):
+        raise ValueError('Math domain error at initialization')
+    else:
+        while np.abs(f(c,*args)) >= root_tol:
 
-        if f(a,*args)*f(c,*args)<=0:
-            a = a 
-            b = c 
-        elif f(b,*args)*f(c,*args)<=0:
-            a = c
-            b = b 
-        c = (a+b)/2 
-        runnum +=1  
-        if runnum == maxiter:
-            break
-    return c 
+            if f(a,*args)*f(c,*args)<=0:
+                a = a 
+                b = c 
+
+            elif f(b,*args)*f(c,*args)<=0:
+                a = c
+                b = b 
+            c = (a+b)/2 
+            runnum +=1  
+            try:
+                f(c,*args) 
+            except ZeroDivisionError as e:
+                raise ZeroDivisionError(f'Math domain error, zero-division after {runnum} iterations')
+    
+            if np.isnan(np.abs(f(c,*args))):
+                raise ValueError(f'Math domain error after {runnum} iterations')
+            if runnum == maxiter:
+                raise RuntimeError(f'No root found in {maxiter} iterations')
+        return c 
             
         
 if __name__ == '__main__':
